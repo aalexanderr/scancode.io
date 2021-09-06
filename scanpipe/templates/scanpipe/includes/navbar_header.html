@@ -29,5 +29,13 @@
         </div>
       </div>
     </div>
+    {% if scancodeio.settings.AUTH_ENABLED %}
+    <p class="navbar-item">Loged in as: {{ user.email }}</p>
+      {% if scancodeio.settings.AUTH_METHOD == "OIDC" %}
+      <form class="navbar-item" action="{% url 'oidc_logout' %}" method="POST">{% csrf_token %}
+        <button class="button is-link" type="submit">Log out</button>
+      </form>
+      {% endif %}
+    {% endif %}
   </div>
 </nav>

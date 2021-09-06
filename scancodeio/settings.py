@@ -84,6 +84,7 @@ INSTALLED_APPS = (
     "django_filters",
     "rest_framework",
     "rest_framework.authtoken",
+    "mozilla_django_oidc",
 )
 
 MIDDLEWARE = (
@@ -93,6 +94,7 @@ MIDDLEWARE = (
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "mozilla_django_oidc.middleware.SessionRefresh",
 )
 
 ROOT_URLCONF = "scancodeio.urls"
@@ -153,6 +155,19 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+# OIDC-auth
+OIDC_RP_CLIENT_ID = env.str("OIDC_RP_CLIENT_ID", default="clientid")
+OIDC_RP_CLIENT_SECRET = env.str("OIDC_RP_CLIENT_SECRET", default="yoursecret")
+OIDC_RP_SIGN_ALGO = env.str("OIDC_RP_SIGN_ALGO", default="RS256")
+OIDC_OP_JWKS_ENDPOINT = env.str("OIDC_OP_JWKS_ENDPOINT", default="/")
+OIDC_OP_AUTHORIZATION_ENDPOINT = env.str("OIDC_OP_AUTHORIZATION_ENDPOINT", default="/")
+OIDC_OP_TOKEN_ENDPOINT = env.str("OIDC_OP_TOKEN_ENDPOINT", default="/")
+OIDC_OP_USER_ENDPOINT = env.str("OIDC_OP_USER_ENDPOINT", default="/")
+OIDC_OP_LOGOUT_ENDPOINT = env.str("OIDC_OP_LOGOUT_ENDPOINT", default="/")
+LOGIN_URL = 'oidc_authentication_init'
+LOGOUT_REDIRECT_URL = "/"
+OIDC_OP_LOGOUT_URL_METHOD = "scancodeio.settings.oidc_logout"
+
 # Testing
 
 # True if running tests through `./manage test`
@@ -205,6 +220,10 @@ LOGGING = {
             "handlers": ["null"] if IS_TESTS else ["console"],
             "level": env.str("SCANCODEIO_LOG_LEVEL", "INFO"),
         },
+        "mozilla_django_oidc": {
+            "handlers": ["null"] if IS_TESTS else ["console"],
+            "level": env.str("DJANGO_LOG_LEVEL", "INFO"),
+        },
     },
 }
 
@@ -249,6 +268,11 @@ CELERY_TASK_DEFAULT_QUEUE = env.str("CELERY_RESULT_BACKEND", default="default")
 # sent to the queue for execution by a worker.
 CELERY_TASK_ALWAYS_EAGER = env.bool("CELERY_TASK_ALWAYS_EAGER", default=True)
 
+# Restricts scancode.io to authenticated users.
+# Needs authorization backend enabled, only OIDC_ENABLED is supported now.
+AUTH_ENABLED = env.bool("AUTH_ENABLED", default=False)
+AUTH_METHOD = env.str("AUTH_METHOD", default=None)
+
 # Django restframework
 
 REST_FRAMEWORK = {
@@ -272,3 +296,26 @@ REST_FRAMEWORK = {
     "PAGE_SIZE": env.int("SCANCODEIO_REST_API_PAGE_SIZE", default=50),
     "UPLOADED_FILES_USE_URL": False,
 }
+
+if AUTH_ENABLED:
+    REST_FRAMEWORK["DEFAULT_PERMISSION_CLASSES"] = env.tuple(
+        "REST_FRAMEWORK_DEFAULT_PERMISSION_CLASSES",
+        default=(
+            "rest_framework.permissions.IsAuthenticated",
+        ),
+    )
+    if AUTH_METHOD is "OIDC":
+        from django.utils.http import urlencode
+
+        REST_FRAMEWORK["DEFAULT_AUTHENTICATION_CLASSES"] = (
+            "mozilla_django_oidc.contrib.drf.OIDCAuthentication",
+            "rest_framework.authentication.SessionAuthentication",
+            )
+        AUTHENTICATION_BACKENDS = (
+            "mozilla_django_oidc.auth.OIDCAuthenticationBackend",
+            "django.contrib.auth.backends.ModelBackend",
+        )
+    def oidc_logout(request):
+        logout_url = OIDC_OP_LOGOUT_ENDPOINT
+        redirect_uri = request.build_absolute_uri(LOGOUT_REDIRECT_URL)
+        return logout_url + '?' + urlencode({'redirect_uri': redirect_uri})

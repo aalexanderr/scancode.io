@@ -25,6 +25,8 @@ from collections import Counter
 from django.apps import apps
 from django.conf import settings
 from django.contrib import messages
+from django.contrib.auth.mixins import LoginRequiredMixin
+from django.contrib.auth.decorators import login_required
 from django.db.models import Count
 from django.http import FileResponse
 from django.http import Http404
@@ -41,6 +43,7 @@ import saneyaml
 from django_filters.views import FilterView
 
 from scancodeio.celery import app as celery_app
+from scancodeio.settings import AUTH_ENABLED
 from scanpipe.filters import ErrorFilterSet
 from scanpipe.filters import PackageFilterSet
 from scanpipe.filters import ProjectFilterSet
@@ -61,15 +64,14 @@ from scanpipe.pipes import output
 
 scanpipe_app = apps.get_app_config("scanpipe")
 
-
-class PrefetchRelatedViewMixin:
+class PrefetchRelatedViewMixin(LoginRequiredMixin if AUTH_ENABLED else object):
     prefetch_related = None
 
     def get_queryset(self):
         return super().get_queryset().prefetch_related(*self.prefetch_related)
 
 
-class ProjectViewMixin:
+class ProjectViewMixin(LoginRequiredMixin if AUTH_ENABLED else object):
     model = Project
     slug_url_kwarg = "uuid"
     slug_field = "uuid"
@@ -105,7 +107,9 @@ class ProjectListView(PrefetchRelatedViewMixin, PaginatedFilterView):
         return context
 
 
-class ProjectCreateView(generic.CreateView):
+class ProjectCreateView(
+    generic.CreateView, LoginRequiredMixin if AUTH_ENABLED else object
+):
     model = Project
     form_class = ProjectForm
     template_name = "scanpipe/project_form.html"
@@ -327,6 +331,7 @@ class ProjectTreeView(ProjectViewMixin, generic.DetailView):
         return context
 
 
+@login_required_if_auth_enabled
 def execute_pipeline_view(request, uuid, run_uuid):
     project = get_object_or_404(Project, uuid=uuid)
     run = get_object_or_404(Run, uuid=run_uuid, project=project)
@@ -377,7 +382,7 @@ class ProjectResultsView(ProjectViewMixin, generic.DetailView):
         raise Http404("Format not supported.")
 
 
-class ProjectRelatedViewMixin:
+class ProjectRelatedViewMixin(LoginRequiredMixin):
     def get_project(self):
         if not getattr(self, "project", None):
             project_uuid = self.kwargs["uuid"]
@@ -481,6 +486,7 @@ class CodebaseResourceDetailsView(ProjectRelatedViewMixin, generic.DetailView):
         return context
 
 
+@login_required_if_auth_enabled
 def run_detail_view(request, uuid):
     template = "scanpipe/includes/run_modal_content.html"
     run = get_object_or_404(Run, uuid=uuid)
@@ -514,7 +520,7 @@ class CodebaseResourceRawView(
         raise Http404
 
 
-class AppMonitorView(generic.TemplateView):
+class AppMonitorView(LoginRequiredMixin, generic.TemplateView):
     template_name = "scanpipe/app_monitoring.html"
 
     def get_context_data(self, **kwargs):
@@ -528,3 +534,9 @@ class AppMonitorView(generic.TemplateView):
 
         context["inspector"] = celery_app.control.inspect()
         return context
+
+
+def login_required_if_auth_enabled(fn):
+    if AUTH_ENABLED:
+        return login_required(fn)
+    return fn
