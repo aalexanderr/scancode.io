@@ -44,7 +44,7 @@ class AlpinePackages(Pipeline):
             cls.complement_missing_package_data,
         )
 
-    scancode_options = ["--copyright", "--summary"]
+    scancode_options = ["--copyright", "license", "--summary"]
 
     def create_alpine_versions_dict(self):
         """
@@ -102,6 +102,6 @@ class AlpinePackages(Pipeline):
             package.update_extra_data(
                 data=extract_summary_fields(
                     scan_result_path=scan_result_path,
-                    summary_field_names=["copyrights"],
+                    summary_field_names=["license_expressions", "copyrights"],
                 )
             )
