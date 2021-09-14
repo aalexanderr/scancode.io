@@ -25,7 +25,7 @@ from scanpipe.pipes.alpine import download_or_checkout_aports
 from scanpipe.pipes.alpine import extract_summary_fields
 from scanpipe.pipes.alpine import get_unscanned_packages_from_db
 from scanpipe.pipes.alpine import prepare_scan_dir
-from scanpipe.pipes.scancode import run_extractcode
+from scanpipe.pipes.scancode import extract_archive, extract_archives
 from scanpipe.pipes.scancode import run_scancode
 
 
@@ -44,7 +44,7 @@ class AlpinePackages(Pipeline):
             cls.complement_missing_package_data,
         )
 
-    scancode_options = ["--copyright", "license", "--summary"]
+    scancode_options = ["--copyright", "--license", "--summary"]
 
     def create_alpine_versions_dict(self):
         """
@@ -63,7 +63,7 @@ class AlpinePackages(Pipeline):
         Download corresponding aports repository branches (alpine versions).
         """
         self.aports_dir_path = self.project.tmp_path
-        for image_id, alpine_version in self.alpine_versions.items():
+        for alpine_version in self.alpine_versions.values():
             download_or_checkout_aports(
                 aports_dir_path=self.project.tmp_path, alpine_version=alpine_version
             )
@@ -78,30 +78,65 @@ class AlpinePackages(Pipeline):
         """
         for (
             alpine_version,
-            commit_id,
+            aports_pkg_name,
+            aports_commit_id,
             scan_target_path,
             scan_result_path,
             package,
         ) in get_unscanned_packages_from_db(
             project=self.project, alpine_versions=self.alpine_versions
         ):
-            if not download_or_checkout_aports(
-                aports_dir_path=self.aports_dir_path,
-                alpine_version=alpine_version,
-                commit_id=commit_id,
-            ) or not prepare_scan_dir(
-                package_name=package.name, scan_target_path=scan_target_path
-            ):
-                continue
-            run_extractcode(location=str(scan_target_path))
-            run_scancode(
-                location=str(scan_target_path),
-                output_file=str(scan_result_path),
-                options=self.scancode_options,
-            )
-            package.update_extra_data(
-                data=extract_summary_fields(
-                    scan_result_path=scan_result_path,
-                    summary_field_names=["license_expressions", "copyrights"],
+            # self.log(f"package: {package.name}")
+            # self.log(f"aports_dir_path {self.aports_dir_path} v: {alpine_version} c: {aports_commit_id}")
+            # self.log(f"scan_target_path {scan_target_path} scan_result_path: {scan_result_path}")
+
+            if scan_result_path.exists():
+                package.update_extra_data(
+                    data=extract_summary_fields(
+                        scan_result_path=scan_result_path,
+                        summary_field_names=["license_expressions", "copyrights"],
+                    )
                 )
+
+            if not scan_result_path.exists():
+                download_or_checkout_aports(
+                    aports_dir_path=self.aports_dir_path,
+                    alpine_version=alpine_version,
+                    commit_id=aports_commit_id,
+                )
+                prepare_scan_dir(
+                    package_name=aports_pkg_name, scan_target_path=scan_target_path
+                )
+
+                extract_errors = extract_archives(str(scan_target_path))
+                if extract_errors:
+                    # self.log(f"{extract_errors}")
+                    self.add_error("\n".join(extract_errors))
+                found_extracted = False
+                for i in scan_target_path.iterdir():
+                    if "-extract" in i.as_posix():
+                        self.log(f"i with extract suffix{i}")
+                        found_extracted = True
+                        exitcode, output = run_scancode(
+                            location=i.as_posix(),
+                            output_file=scan_result_path.as_posix(),
+                            options=self.scancode_options,
+                        )
+                        self.log(f"During scanning of {package.name}")
+                        self.log(f"ScanCode-toolkit exited with {exitcode}, {output}")
+                        self.add_error(f"{exitcode},{output}")
+                        continue
+                if not found_extracted:
+                    self.log(
+                        f"package {package.name} does not have anything to be scanned."
+                    )
+                    continue
+            data = extract_summary_fields(
+                scan_result_path,
+                summary_field_names=["license_expressions", "copyrights"],
             )
+            if aports_pkg_name is not package.name:
+                data[
+                    "Notices"
+                ] = f"Please note that licenses and copyrights in extra_data pertain to whole {aports_pkg_name} codebase, not just a subset installed: {package.name}"
+            package.update_extra_data(data)

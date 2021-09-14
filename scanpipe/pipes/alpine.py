@@ -27,6 +27,7 @@ from shutil import copytree
 from fetchcode import fetch
 from fetchcode.vcs.git import fetch_via_git
 from packagedcode import alpine
+from packageurl import PackageURL
 
 from scanpipe.models import DiscoveredPackage
 
@@ -40,15 +41,17 @@ def download_or_checkout_aports(aports_dir_path, alpine_version, commit_id=None)
     Download aports repository and it's branch based on `alpine_version`.
     Checkout to a branch (alpine version).
     If `commit_id` is provided also checkout to a commit.
-    Return `aports_dir_path` if checkout(s) succeded. #TODO Proper fetchcode patch required (extending #54)
+    Return `aports_dir_path` if checkout(s) succeded. #TODO Proper fetchcode
+    patch required (extending #54)
     """
     major, minor = alpine_version.split(".")[:2]
     aports_dir_path = str(aports_dir_path / APORTS_DIR_NAME)
-    fetch_via_git(
-        url=f"git+{APORTS_URL}@{major}.{minor}-stable", location=aports_dir_path
+    url = (
+        f"git+{APORTS_URL}@{commit_id}"
+        if commit_id
+        else f"git+{APORTS_URL}@{major}.{minor}-stable"
     )
-    if commit_id:
-        fetch_via_git(url=f"git+{APORTS_URL}@{commit_id}", location=aports_dir_path)
+    fetch_via_git(url=url, location=aports_dir_path)
     return aports_dir_path
 
 
@@ -63,17 +66,14 @@ def get_unscanned_packages_from_db(project, alpine_versions):
     The returned iterator contains not-a-subpackage alpine packages that don't have an existing scan result file.
     """
     for package in DiscoveredPackage.objects.filter(project=project, type="alpine"):
-        scan_id = f"{package.name}_{package.version}"
-        scan_result_path = project.output_path / (scan_id + ".json")
+        aports_pkg_name = (PackageURL.from_string(package.source_packages[0])).name
+        scan_id = f"{aports_pkg_name}_{package.version}"
+        scan_result_path = project.output_path / (aports_pkg_name + ".json")
         alpine_version = alpine_versions.get(package.extra_data["image_id"])
-        commit_id = package.vcs_url.split("id=")[1]
+        aports_commit_id = package.vcs_url.split("id=")[1]
         scan_target_path = project.tmp_path / scan_id
-        not_a_subpackage = (
-            not package.source_packages or package.source_packages[0] in package.purl
-        )
-        scan_result_nonexistent = not scan_result_path.exists()
-        if not_a_subpackage and scan_result_nonexistent:
-            yield alpine_version, commit_id, scan_target_path, scan_result_path, package
+        if not scan_result_path.exists():
+            yield alpine_version, aports_pkg_name, aports_commit_id, scan_target_path, scan_result_path, package
 
 
 def prepare_scan_dir(package_name, scan_target_path, aports_dir_path=None):
@@ -98,7 +98,8 @@ def prepare_scan_dir(package_name, scan_target_path, aports_dir_path=None):
             continue
         if not any(apkbuild_dir.iterdir()):
             break
-        copytree(apkbuild_dir, scan_target_path)
+        if not scan_target_path.exists():
+            copytree(apkbuild_dir, scan_target_path)
         package_sources = (
             alpine.parse_apkbuild((scan_target_path / "APKBUILD").as_posix())
             .to_dict()
